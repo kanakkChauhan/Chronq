@@ -12,6 +12,7 @@ interface Job {
 
 export default function App() {
   const [jobs, setJobs] = useState<Record<string, Job>>({})
+  const [workerCount, setWorkerCount] = useState<number>(3)
 
   useEffect(() => {
     const ws = new WebSocket('ws://localhost:8000/api/ws')
@@ -26,6 +27,14 @@ export default function App() {
       }
     }
 
+    // Fetch initial worker count
+    fetch('http://localhost:8000/api/workers')
+      .then(res => res.json())
+      .then(data => {
+        if (data.active_workers !== undefined) setWorkerCount(data.active_workers)
+      })
+      .catch(err => console.error("Failed to fetch workers:", err))
+
     return () => ws.close()
   }, [])
 
@@ -37,25 +46,58 @@ export default function App() {
     })
   }
 
+  const scaleWorkers = async (newCount: number) => {
+    if (newCount < 0 || newCount > 10) return
+    setWorkerCount(newCount)
+    await fetch('http://localhost:8000/api/workers/scale', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workers: newCount })
+    })
+  }
+
   return (
     <div className="min-h-screen bg-neutral-950 text-white p-8 font-sans">
       <div className="max-w-4xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-2xl font-bold tracking-tight">TaskFlow Engine</h1>
-          <div className="flex gap-2">
+        <div className="flex justify-between items-center mb-6">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">TaskFlow Engine</h1>
+            <p className="text-xs text-neutral-400 mt-1">Active Worker Fleet: <span className="text-emerald-400 font-mono font-bold">{workerCount}</span></p>
+          </div>
+          
+          {/* Worker Scaler Controls */}
+          <div className="flex items-center gap-2 bg-neutral-900 border border-neutral-800 p-1.5 rounded-lg shadow-sm">
+            <span className="text-xs text-neutral-400 px-2 font-medium">Workers:</span>
             <button 
-              onClick={() => triggerJob('api_request', 3)}
-              className="bg-purple-600 hover:bg-purple-500 transition-colors px-3 py-1.5 rounded-md text-sm font-semibold shadow-sm"
+              onClick={() => scaleWorkers(Math.max(0, workerCount - 1))}
+              className="bg-neutral-800 hover:bg-neutral-700 text-white px-2.5 py-1 rounded text-xs font-bold transition-colors"
             >
-              + API Sync (Flaky)
+              -
             </button>
+            <span className="text-sm font-mono font-bold px-2">{workerCount}</span>
             <button 
-              onClick={() => triggerJob('report_generation', 1)}
-              className="bg-blue-600 hover:bg-blue-500 transition-colors px-3 py-1.5 rounded-md text-sm font-semibold shadow-sm"
+              onClick={() => scaleWorkers(workerCount + 1)}
+              className="bg-neutral-800 hover:bg-neutral-700 text-white px-2.5 py-1 rounded text-xs font-bold transition-colors"
             >
-              + Gen Report (Low)
+              +
             </button>
           </div>
+        </div>
+
+        {/* Action Triggers */}
+        <div className="flex gap-2 mb-8">
+          <button 
+            onClick={() => triggerJob('api_request', 3)}
+            className="bg-purple-600 hover:bg-purple-500 transition-colors px-3.5 py-2 rounded-md text-sm font-semibold shadow-sm"
+          >
+            + API Sync (Flaky)
+          </button>
+          <button 
+            onClick={() => triggerJob('report_generation', 1)}
+            className="bg-blue-600 hover:bg-blue-500 transition-colors px-3.5 py-2 rounded-md text-sm font-semibold shadow-sm"
+          >
+            + Gen Report (Low)
+          </button>
         </div>
         
         <div className="flex flex-col gap-3">
@@ -95,7 +137,7 @@ export default function App() {
           
           {Object.keys(jobs).length === 0 && (
             <div className="text-center py-12 border border-dashed border-neutral-800 rounded-lg text-neutral-500">
-              Click the API Sync button to test failure recovery.
+              Trigger a workload to watch your elastic worker fleet process jobs.
             </div>
           )}
         </div>
