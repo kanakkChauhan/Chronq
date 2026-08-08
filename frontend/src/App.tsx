@@ -6,6 +6,8 @@ interface Job {
   status: string
   priority: number
   error: string | null
+  retries: number
+  max_retries: number
 }
 
 export default function App() {
@@ -45,7 +47,7 @@ export default function App() {
               onClick={() => triggerJob('api_request', 3)}
               className="bg-purple-600 hover:bg-purple-500 transition-colors px-3 py-1.5 rounded-md text-sm font-semibold shadow-sm"
             >
-              + API Sync (High)
+              + API Sync (Flaky)
             </button>
             <button 
               onClick={() => triggerJob('report_generation', 1)}
@@ -68,8 +70,16 @@ export default function App() {
                   <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-neutral-800 text-neutral-400">
                     PRIORITY {job.priority}
                   </span>
+                  {job.retries > 0 && (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-900/40 text-amber-300 border border-amber-800">
+                      RETRY {job.retries}/{job.max_retries}
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-neutral-500 font-mono mt-1">{job.id}</p>
+                {job.error && (
+                  <p className="text-xs text-red-400 mt-1 font-mono">{job.error}</p>
+                )}
               </div>
               <div className="text-right">
                 <span className={`px-2.5 py-1 rounded-md text-xs font-medium uppercase tracking-wider
@@ -85,7 +95,7 @@ export default function App() {
           
           {Object.keys(jobs).length === 0 && (
             <div className="text-center py-12 border border-dashed border-neutral-800 rounded-lg text-neutral-500">
-              Run the stress test script to populate the queue.
+              Click the API Sync button to test failure recovery.
             </div>
           )}
         </div>
