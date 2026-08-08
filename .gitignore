@@ -1,0 +1,22 @@
+# Python environment
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Node environment
+node_modules/
+dist/
+build/
+
+# Secrets (Absolute strict rule)
+.env
+*.pem
+*.key
+
+# OS & Editor configurations
+.DS_Store
+.vscode/
