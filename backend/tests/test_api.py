@@ -5,8 +5,8 @@ from app.main import app
 
 client = TestClient(app)
 
-@patch("app.engine.queue.AsyncPriorityQueue.enqueue", new_callable=AsyncMock)
-@patch("app.engine.queue.AsyncPriorityQueue.get_metrics", new_callable=AsyncMock)
+@patch("app.engine.queue.RedisJobQueue.enqueue", new_callable=AsyncMock)
+@patch("app.engine.queue.RedisJobQueue.get_metrics", new_callable=AsyncMock)
 def test_create_and_get_job(mock_get_metrics, mock_enqueue):
     mock_get_metrics.return_value = {
         "queued": 1,
