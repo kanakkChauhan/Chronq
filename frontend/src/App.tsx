@@ -27,11 +27,11 @@ export default function App() {
     return () => ws.close()
   }, [])
 
-  const triggerJob = async () => {
+  const triggerJob = async (type: string, priority: number) => {
     await fetch('http://localhost:8000/api/jobs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'data_process', payload: {}, priority: 2 })
+      body: JSON.stringify({ type, payload: {}, priority })
     })
   }
 
@@ -40,12 +40,20 @@ export default function App() {
       <div className="max-w-4xl mx-auto">
         <div className="flex justify-between items-center mb-8">
           <h1 className="text-2xl font-bold tracking-tight">TaskFlow Engine</h1>
-          <button 
-            onClick={triggerJob}
-            className="bg-blue-600 hover:bg-blue-500 transition-colors px-4 py-2 rounded-md text-sm font-semibold shadow-sm"
-          >
-            Trigger Workload
-          </button>
+          <div className="flex gap-2">
+            <button 
+              onClick={() => triggerJob('api_request', 3)}
+              className="bg-purple-600 hover:bg-purple-500 transition-colors px-3 py-1.5 rounded-md text-sm font-semibold shadow-sm"
+            >
+              + API Sync (High)
+            </button>
+            <button 
+              onClick={() => triggerJob('report_generation', 1)}
+              className="bg-blue-600 hover:bg-blue-500 transition-colors px-3 py-1.5 rounded-md text-sm font-semibold shadow-sm"
+            >
+              + Gen Report (Low)
+            </button>
+          </div>
         </div>
         
         <div className="flex flex-col gap-3">
@@ -57,8 +65,11 @@ export default function App() {
               <div>
                 <div className="flex items-center gap-3">
                   <p className="font-semibold text-neutral-200">{job.type}</p>
-                  <p className="text-xs text-neutral-500 font-mono">{job.id}</p>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-neutral-800 text-neutral-400">
+                    PRIORITY {job.priority}
+                  </span>
                 </div>
+                <p className="text-xs text-neutral-500 font-mono mt-1">{job.id}</p>
               </div>
               <div className="text-right">
                 <span className={`px-2.5 py-1 rounded-md text-xs font-medium uppercase tracking-wider
@@ -74,7 +85,7 @@ export default function App() {
           
           {Object.keys(jobs).length === 0 && (
             <div className="text-center py-12 border border-dashed border-neutral-800 rounded-lg text-neutral-500">
-              No active jobs in the queue.
+              Run the stress test script to populate the queue.
             </div>
           )}
         </div>
