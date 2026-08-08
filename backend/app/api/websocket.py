@@ -1,13 +1,11 @@
 from fastapi import WebSocket
-from typing import List
-import json
 import logging
 
 logger = logging.getLogger(__name__)
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -20,11 +18,17 @@ class ConnectionManager:
             logger.info(f"Client disconnected. Active connections: {len(self.active_connections)}")
 
     async def broadcast(self, message: dict):
+        """Broadcasts a JSON message to all connected WebSocket clients."""
+        dead_connections = []
         for connection in self.active_connections:
             try:
-                await connection.send_text(json.dumps(message))
+                await connection.send_json(message)
             except Exception as e:
-                logger.error(f"Failed to broadcast to client: {e}")
-                pass
+                logger.error(f"Failed to send message to a client: {e}")
+                dead_connections.append(connection)
+
+        # Clean up any connections that silently dropped
+        for dead in dead_connections:
+            self.disconnect(dead)
 
 ws_manager = ConnectionManager()
