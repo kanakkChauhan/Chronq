@@ -1,20 +1,29 @@
 import asyncio
 import logging
+import json
 from datetime import datetime, timezone
 from app.models.job import Job, JobStatus
 from app.engine.queue import job_queue
+from app.api.websocket import ws_manager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+async def broadcast_state(job: Job):
+    # Pydantic's model_dump_json handles datetime serialization safely
+    job_dict = json.loads(job.model_dump_json())
+    await ws_manager.broadcast({
+        "event": "job_updated",
+        "job": job_dict
+    })
+
 async def process_job(job: Job) -> None:
     job.status = JobStatus.RUNNING
     job.started_at = datetime.now(timezone.utc)
+    await broadcast_state(job)
     
     try:
-        # Simulate I/O bound workload
         await asyncio.sleep(2)
-        
         job.status = JobStatus.COMPLETED
         
     except Exception as e:
@@ -23,6 +32,7 @@ async def process_job(job: Job) -> None:
         logger.error(f"Job {job.id} failed: {job.error}")
     finally:
         job.finished_at = datetime.now(timezone.utc)
+        await broadcast_state(job)
 
 async def worker_loop(worker_id: int) -> None:
     logger.info(f"Worker {worker_id} initialized")
