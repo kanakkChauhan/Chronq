@@ -5,10 +5,9 @@ from app.main import app
 
 client = TestClient(app)
 
-@patch("app.main.job_queue.enqueue", new_callable=AsyncMock)
-@patch("app.main.job_queue.get_metrics", new_callable=AsyncMock)
+@patch("app.engine.queue.AsyncPriorityQueue.enqueue", new_callable=AsyncMock)
+@patch("app.engine.queue.AsyncPriorityQueue.get_metrics", new_callable=AsyncMock)
 def test_create_and_get_job(mock_get_metrics, mock_enqueue):
-    # Mock the return value of get_metrics so it doesn't touch the live Redis loop
     mock_get_metrics.return_value = {
         "queued": 1,
         "running": 0,
@@ -31,7 +30,6 @@ def test_create_and_get_job(mock_get_metrics, mock_enqueue):
     assert data["status"] == "queued"
     assert data["job_id"] == "auto-test-job-1"
 
-    # 2. Check observability metrics endpoint
     obs_response = client.get("/api/observability")
     assert obs_response.status_code == 200
     obs_data = obs_response.json()
