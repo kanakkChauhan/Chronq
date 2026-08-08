@@ -35,5 +35,4 @@ jobs:
         env:
           REDIS_HOST: localhost
         run: |
-          cd backend
-          PYTHONPATH=. pytest -v
+          PYTHONPATH=backend pytest backend/tests -v
