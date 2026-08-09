@@ -6,7 +6,21 @@ class RedisJobQueue:
     def __init__(self):
         redis_url = os.getenv("REDIS_URL")
         if redis_url:
-            self.redis = Redis.from_url(redis_url, decode_responses=True)
+            # 1. Automatically ensure Upstash URLs use rediss:// (TLS/SSL required)
+            if "upstash.io" in redis_url and redis_url.startswith("redis://"):
+                redis_url = redis_url.replace("redis://", "rediss://", 1)
+
+            # 2. Configure keepalives and SSL handshake resilience for Render containers
+            kwargs = {
+                "decode_responses": True,
+                "socket_keepalive": True,
+                "health_check_interval": 10,
+                "retry_on_timeout": True,
+            }
+            if redis_url.startswith("rediss://"):
+                kwargs["ssl_cert_reqs"] = "none"
+
+            self.redis = Redis.from_url(redis_url, **kwargs)
         else:
             redis_host = os.getenv("REDIS_HOST", "127.0.0.1")
             self.redis = Redis(host=redis_host, port=6379, db=0, decode_responses=True)
