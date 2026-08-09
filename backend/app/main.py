@@ -22,11 +22,13 @@ workers_dict = {}
 start_time = time.time()
 simulate_failures = False
 
+DEFAULT_WORKERS = int(os.getenv("DEFAULT_WORKERS", 2))
+
 @app.on_event("startup")
 async def startup_event():
     global start_time
     start_time = time.time()
-    for i in range(3):
+    for i in range(DEFAULT_WORKERS):
         worker = Worker(worker_id=i, queue=job_queue)
         workers_dict[i] = worker
         task = asyncio.create_task(worker.run())
