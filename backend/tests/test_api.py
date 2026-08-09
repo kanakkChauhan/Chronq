@@ -6,7 +6,7 @@ from app.main import app
 client = TestClient(app)
 
 @patch("app.engine.queue.RedisJobQueue.enqueue", new_callable=AsyncMock)
-@patch("app.engine.queue.RedisJobQueue.get_metrics", new_callable=AsyncMock)
+@patch("app.engine.queue.RedisJobQueue.get_metrics")
 def test_create_and_get_job(mock_get_metrics, mock_enqueue):
     mock_get_metrics.return_value = {
         "queued": 1,
@@ -23,7 +23,7 @@ def test_create_and_get_job(mock_get_metrics, mock_enqueue):
         "max_retries": 2,
         "payload": {"recipient": "test@example.com"}
     }
-    
+
     response = client.post("/api/jobs", json=job_payload)
     assert response.status_code == 200
     data = response.json()

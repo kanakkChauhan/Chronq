@@ -1,109 +1,126 @@
-from contextlib import asynccontextmanager
-import asyncio
-import logging
+import os
 import time
+import uuid
+import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
-from app.models.job import Job
 from app.engine.queue import job_queue
-from app.engine.worker import worker_loop, worker_states, engine_config
-from app.api.websocket import ws_manager
+from app.engine.worker import Worker
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-worker_tasks = []
-start_time = time.time()
-
-class ScaleRequest(BaseModel):
-    workers: int
-
-class ToggleRequest(BaseModel):
-    enabled: bool
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("Starting up TaskFlow engine workers...")
-    for i in range(3):
-        task = asyncio.create_task(worker_loop(i))
-        worker_tasks.append(task)
-    yield
-    logger.info("Shutting down TaskFlow engine workers...")
-    for task in worker_tasks:
-        task.cancel()
-    await asyncio.gather(*worker_tasks, return_exceptions=True)
-
-app = FastAPI(title="TaskFlow Engine", lifespan=lifespan)
+app = FastAPI(title="Chronq API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.post("/api/jobs")
-async def create_job(job: Job):
-    await job_queue.enqueue(job)
-    return {"status": "queued", "job_id": job.id}
+worker_tasks = []
+workers_dict = {}
+start_time = time.time()
+simulate_failures = False
 
-@app.get("/api/jobs/{job_id}")
-async def get_job_status(job_id: str):
-    job = await job_queue.get_job_status(job_id) # Added AWAIT
-    if not job:
-        return {"error": "Job not found"}, 404
-    return job
+@app.on_event("startup")
+async def startup_event():
+    global start_time
+    start_time = time.time()
+    for i in range(3):
+        worker = Worker(worker_id=i, queue=job_queue)
+        workers_dict[i] = worker
+        task = asyncio.create_task(worker.run())
+        worker_tasks.append(task)
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    for task in worker_tasks:
+        task.cancel()
+
+@app.post("/api/jobs")
+async def create_job(job_data: dict):
+    if "id" not in job_data:
+        job_data["id"] = f"job-{uuid.uuid4().hex[:8]}"
+    job_data["status"] = "queued"
+    job_data.setdefault("priority", 0)
+    job_data.setdefault("retries", 0)
+    job_data.setdefault("max_retries", 3)
+    job_data.setdefault("error", None)
+    job_data.setdefault("attempt_history", [])
+
+    await job_queue.enqueue(job_data)
+    return {"status": "queued", "job_id": job_data["id"], "job": job_data}
 
 @app.get("/api/observability")
 async def get_observability():
-    queue_metrics = await job_queue.get_metrics() # Added AWAIT
+    queue_metrics = job_queue.get_metrics()
     active_count = sum(1 for task in worker_tasks if not task.done())
     uptime = max(1.0, time.time() - start_time)
     throughput = round(queue_metrics["completed"] / uptime, 1)
 
+    worker_states = {}
+    for w_id, w_instance in workers_dict.items():
+        worker_states[w_id] = {
+            "status": getattr(w_instance, "status", "IDLE"),
+            "current_job": getattr(w_instance, "current_job", None)
+        }
+
     return {
         "active_workers": active_count,
+        "queued": queue_metrics["queued"],
+        "running": queue_metrics["running"],
+        "completed": queue_metrics["completed"],
+        "failed": queue_metrics["failed"],
+        "failure_rate": queue_metrics["failure_rate"],
         "throughput": throughput,
-        "simulate_failures": engine_config["simulate_failures"],
-        **queue_metrics,
+        "simulate_failures": simulate_failures,
         "workers": worker_states
     }
 
 @app.post("/api/workers/scale")
-async def scale_workers(req: ScaleRequest):
-    global worker_tasks
-    target = req.workers
-    if target < 0 or target > 20:
-        return {"error": "Worker count must be between 0 and 20"}, 400
+async def scale_workers(payload: dict):
+    target_count = payload.get("workers", len(worker_tasks))
+    current_count = len(worker_tasks)
 
-    current_active = [t for t in worker_tasks if not t.done()]
-    current_count = len(current_active)
-
-    if target > current_count:
-        for i in range(current_count, target):
-            task = asyncio.create_task(worker_loop(i))
+    if target_count > current_count:
+        for i in range(current_count, target_count):
+            worker = Worker(worker_id=i, queue=job_queue)
+            workers_dict[i] = worker
+            task = asyncio.create_task(worker.run())
             worker_tasks.append(task)
-    elif target < current_count:
-        to_cancel = current_active[target:]
-        for task in to_cancel:
-            task.cancel()
-        await asyncio.gather(*to_cancel, return_exceptions=True)
+    elif target_count < current_count:
+        for _ in range(current_count - target_count):
+            if worker_tasks:
+                task = worker_tasks.pop()
+                task.cancel()
+                if workers_dict:
+                    last_id = max(workers_dict.keys())
+                    workers_dict.pop(last_id, None)
 
-    return {"status": "success", "active_workers": target}
+    return {"active_workers": len(worker_tasks)}
 
 @app.post("/api/simulation/toggle")
-async def toggle_simulation(req: ToggleRequest):
-    engine_config["simulate_failures"] = req.enabled
-    return {"status": "success", "simulate_failures": engine_config["simulate_failures"]}
+async def toggle_simulation(payload: dict):
+    global simulate_failures
+    simulate_failures = payload.get("enabled", not simulate_failures)
+    for worker in workers_dict.values():
+        if hasattr(worker, "simulate_failures"):
+            worker.simulate_failures = simulate_failures
+    return {"simulate_failures": simulate_failures}
 
 @app.websocket("/api/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await ws_manager.connect(websocket)
+    await websocket.accept()
     try:
         while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        ws_manager.disconnect(websocket)
+            await asyncio.sleep(0.5)
+            # 1. Send live metrics heartbeat
+            metrics = job_queue.get_metrics()
+            await websocket.send_json({"event": "heartbeat", "metrics": metrics})
+
+            # 2. Broadcast all jobs so the UI list & audit trail update instantly
+            all_jobs = await job_queue.get_all_jobs()
+            for job in all_jobs.values():
+                await websocket.send_json({"event": "job_updated", "job": job})
+    except (WebSocketDisconnect, Exception):
+        pass

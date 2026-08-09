@@ -34,6 +34,10 @@ interface Metrics {
   workers: Record<number, WorkerState>
 }
 
+// Dynamic environment URLs for Vercel production with localhost fallback
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+const WS_URL = import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:8000/api/ws';
+
 export default function App() {
   const [jobs, setJobs] = useState<Record<string, Job>>({})
   const [metrics, setMetrics] = useState<Metrics>({
@@ -53,8 +57,7 @@ export default function App() {
     let reconnectTimer: ReturnType<typeof setTimeout>;
 
     const connectWS = () => {
-      // Swapped 'localhost' for '127.0.0.1' to bypass Mac IPv6 routing issues
-      ws = new WebSocket('ws://127.0.0.1:8000/api/ws')
+      ws = new WebSocket(WS_URL)
 
       ws.onopen = () => console.log("🟢 WebSocket Connected!")
 
@@ -66,7 +69,7 @@ export default function App() {
       ws.onerror = (err) => console.error("WebSocket Error:", err)
 
       ws.onmessage = (event) => {
-        console.log("📥 RAW WS DATA:", event.data) // <--- ADD THIS LINE
+        console.log("📥 RAW WS DATA:", event.data)
         const data = JSON.parse(event.data)
         if (data.event === 'job_updated') {
           setJobs((prev) => ({
@@ -81,8 +84,7 @@ export default function App() {
 
     const interval = setInterval(async () => {
       try {
-        // Swapped to 127.0.0.1 here as well for consistency
-        const res = await fetch('http://127.0.0.1:8000/api/observability')
+        const res = await fetch(`${API_URL}/api/observability`)
         const data = await res.json()
         setMetrics(data)
       } catch (err) {
@@ -101,7 +103,7 @@ export default function App() {
   }, [])
 
   const triggerJob = async (type: string, priority: number) => {
-    await fetch('http://127.0.0.1:8000/api/jobs', { // Changed to 127.0.0.1
+    await fetch(`${API_URL}/api/jobs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type, payload: {}, priority })
@@ -110,7 +112,7 @@ export default function App() {
 
   const scaleWorkers = async (newCount: number) => {
     if (newCount < 0 || newCount > 20) return
-    await fetch('http://127.0.0.1:8000/api/workers/scale', { // Changed to 127.0.0.1
+    await fetch(`${API_URL}/api/workers/scale`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workers: newCount })
@@ -118,7 +120,7 @@ export default function App() {
   }
 
   const toggleSimulation = async () => {
-    await fetch('http://127.0.0.1:8000/api/simulation/toggle', { // Changed to 127.0.0.1
+    await fetch(`${API_URL}/api/simulation/toggle`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: !metrics.simulate_failures })
@@ -132,7 +134,7 @@ export default function App() {
         {/* Header & Controls */}
         <div className="flex justify-between items-center mb-6">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">TaskFlow Engine</h1>
+            <h1 className="text-2xl font-bold tracking-tight">Chronq</h1>
             <p className="text-xs text-neutral-400 mt-1">Distributed Priority Queue & Worker Orchestrator</p>
           </div>
 
@@ -227,6 +229,12 @@ export default function App() {
             className="bg-blue-600 hover:bg-blue-500 transition-colors px-4 py-2 rounded-md text-sm font-semibold shadow-sm"
           >
             + Generate Report
+          </button>
+          <button
+            onClick={() => triggerJob('critical_alert', 10)}
+            className="bg-red-600 hover:bg-red-500 transition-colors px-4 py-2 rounded-md text-sm font-semibold shadow-sm"
+          >
+            + Critical Alert (P10)
           </button>
         </div>
 
