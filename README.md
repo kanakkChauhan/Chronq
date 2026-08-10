@@ -242,4 +242,4 @@ The project focuses on:
 * API testing
 * Containerized development and deployment
 
-It brings these pieces together into a small working system where jobs move from an API into a shared queue, are processed by workers, and have their progress exposed through a real-time frontend.
+It brings these pieces together into a working system where jobs move from an API into a shared queue, are processed by workers, and have their progress exposed through a real-time frontend.
