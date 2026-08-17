@@ -5,21 +5,21 @@ from app.main import app
 
 client = TestClient(app)
 
-@patch("app.engine.queue.RedisJobQueue.enqueue", new_callable=AsyncMock)
-@patch("app.engine.queue.RedisJobQueue.get_metrics")
+@patch("app.engine.queue.JobQueue.enqueue", new_callable=AsyncMock)
+@patch("app.engine.queue.JobQueue.get_metrics")
 def test_create_and_get_job(mock_get_metrics, mock_enqueue):
     mock_get_metrics.return_value = {
         "queued": 1,
         "running": 0,
         "completed": 0,
         "failed": 0,
-        "failure_rate": 0.0
+        "failure_rate": 0.0,
     }
 
     job_payload = {
         "id": "auto-test-job-1",
         "type": "email_notification",
-        "priority": 10,
+        "priority": 2,
         "max_retries": 2,
         "payload": {"recipient": "test@example.com"}
     }

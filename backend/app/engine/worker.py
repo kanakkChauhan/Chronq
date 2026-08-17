@@ -1,47 +1,68 @@
 import asyncio
+import random
 import logging
+from typing import Optional
+from app.engine.queue import JobQueue
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("chronq.worker")
 
 class Worker:
-    def __init__(self, worker_id: int, queue):
+    def __init__(self, worker_id: int, queue: JobQueue):
         self.worker_id = worker_id
         self.queue = queue
         self.status = "IDLE"
-        self.current_job = None
-        self.simulate_failures = False
+        self.current_job: Optional[str] = None
+        self.simulate_failures: bool = False
+        self._running = True
 
     async def run(self):
-        logger.info(f"Worker {self.worker_id} started.")
-        while True:
+        while self._running:
             try:
-                job = await self.queue.dequeue()
-                if job:
-                    self.status = "BUSY"
-                    self.current_job = job["id"]
-                    logger.info(f"Worker {self.worker_id} processing job {job['id']} ({job['type']})")
-
-                    # Simulate work
-                    await asyncio.sleep(2)
-
-                    # Check failure simulation or retries
-                    if self.simulate_failures and job.get("retries", 0) < job.get("max_retries", 3):
-                        logger.warning(f"Worker {self.worker_id} failing job {job['id']} for retry simulation.")
-                        await self.queue.retry_job(job["id"], error="Simulated Worker Failure")
-                    else:
-                        await self.queue.complete_job(job["id"])
-                        logger.info(f"Worker {self.worker_id} completed job {job['id']}")
-
-                    self.status = "IDLE"
-                    self.current_job = None
-                else:
-                    await asyncio.sleep(1)
-            except asyncio.CancelledError:
-                logger.info(f"Worker {self.worker_id} shutting down.")
-                break
-            except Exception as e:
-                logger.error(f"Worker {self.worker_id} encountered an error: {e}")
                 self.status = "IDLE"
                 self.current_job = None
-                await asyncio.sleep(1)
+
+                # Wait for next job with a short timeout to check self._running flag
+                try:
+                    job_data = await asyncio.wait_for(self.queue.dequeue(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+
+                if not job_data:
+                    continue
+
+                # If stopped while waiting, re-enqueue and exit
+                if not self._running:
+                    await self.queue.enqueue(job_data)
+                    break
+
+                job_id = job_data["id"]
+                self.current_job = job_id
+                self.status = "RUNNING"
+
+                # Synchronize queue registry state
+                await self.queue.mark_running(job_id, f"worker-{self.worker_id}")
+                await self.process_job(job_data)
+
+            except asyncio.CancelledError:
+                self._running = False
+                break
+            except Exception as e:
+                logger.exception(f"Worker {self.worker_id} encountered an error: {e}")
+                await asyncio.sleep(0.5)
+        
+        self.status = "OFFLINE"
+        self.current_job = None
+
+    async def process_job(self, job_data: dict):
+        job_id = job_data["id"]
+        process_time = random.uniform(1.5, 3.0)
+        await asyncio.sleep(process_time)
+
+        if self.simulate_failures and random.random() < 0.6:
+            await self.queue.mark_failed(job_id, error="Simulated worker execution failure")
+        else:
+            await self.queue.mark_completed(job_id, result={"output": f"Processed by worker-{self.worker_id}"})
+
+    def stop(self):
+        """Signals the worker loop to stop gracefully after any in-flight task."""
+        self._running = False

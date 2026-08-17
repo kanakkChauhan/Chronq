@@ -1,155 +1,150 @@
-import os
-import json
-from redis import Redis
+import asyncio
+import time
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional, List
 
-class RedisJobQueue:
+class JobQueue:
     def __init__(self):
-        redis_url = os.getenv("REDIS_URL")
-        if redis_url:
-            # 1. Automatically ensure Upstash URLs use rediss:// (TLS/SSL required)
-            if "upstash.io" in redis_url and redis_url.startswith("redis://"):
-                redis_url = redis_url.replace("redis://", "rediss://", 1)
-
-            # 2. Configure keepalives and SSL handshake resilience for Render containers
-            kwargs = {
-                "decode_responses": True,
-                "socket_keepalive": True,
-                "health_check_interval": 10,
-                "retry_on_timeout": True,
-            }
-            if redis_url.startswith("rediss://"):
-                kwargs["ssl_cert_reqs"] = "none"
-
-            self.redis = Redis.from_url(redis_url, **kwargs)
-        else:
-            redis_host = os.getenv("REDIS_HOST", "127.0.0.1")
-            self.redis = Redis(host=redis_host, port=6379, db=0, decode_responses=True)
-
-        self.queue_key = "taskflow:queue"
-        self.jobs_key = "taskflow:jobs"
-        self.metrics_key = "taskflow:metrics"
-
-    async def enqueue(self, job: dict):
-        job_id = job["id"]
-        priority = job.get("priority", 0)
-        job["status"] = "queued"
-        job.setdefault("attempt_history", [])
-
-        self.redis.hset(self.jobs_key, job_id, json.dumps(job))
-        self.redis.zadd(self.queue_key, {job_id: priority})
-        self.redis.hincrby(self.metrics_key, "queued", 1)
-        return job
-
-    async def dequeue(self):
-        res = self.redis.zpopmax(self.queue_key, count=1)
-        if not res:
-            return None
-
-        job_id, _ = res[0]
-        raw = self.redis.hget(self.jobs_key, job_id)
-        if not raw:
-            return None
-
-        job = json.loads(raw)
-        job["status"] = "running"
-
-        self.redis.hset(self.jobs_key, job_id, json.dumps(job))
-        self.redis.hincrby(self.metrics_key, "queued", -1)
-        self.redis.hincrby(self.metrics_key, "running", 1)
-        return job
-
-    async def get_job(self, job_id: str):
-        raw = self.redis.hget(self.jobs_key, job_id)
-        return json.loads(raw) if raw else None
-
-    async def update_job(self, job: dict):
-        self.redis.hset(self.jobs_key, job["id"], json.dumps(job))
-        return job
-
-    async def complete_job(self, job_id: str):
-        raw = self.redis.hget(self.jobs_key, job_id)
-        if raw:
-            job = json.loads(raw)
-            job["status"] = "completed"
-
-            # Record audit trail entry
-            attempt_num = job.get("retries", 0) + 1
-            job.setdefault("attempt_history", []).append({
-                "attempt": attempt_num,
-                "status": "COMPLETED",
-                "error": None
-            })
-
-            self.redis.hset(self.jobs_key, job_id, json.dumps(job))
-            self.redis.hincrby(self.metrics_key, "running", -1)
-            self.redis.hincrby(self.metrics_key, "completed", 1)
-            return job
-        return None
-
-    async def fail_job(self, job_id: str, error: str = None):
-        raw = self.redis.hget(self.jobs_key, job_id)
-        if raw:
-            job = json.loads(raw)
-            job["status"] = "failed"
-            if error:
-                job["error"] = error
-
-            # Record audit trail entry
-            attempt_num = job.get("retries", 0) + 1
-            job.setdefault("attempt_history", []).append({
-                "attempt": attempt_num,
-                "status": "FAILED",
-                "error": error or "Execution failed"
-            })
-
-            self.redis.hset(self.jobs_key, job_id, json.dumps(job))
-            self.redis.hincrby(self.metrics_key, "running", -1)
-            self.redis.hincrby(self.metrics_key, "failed", 1)
-            return job
-        return None
-
-    async def retry_job(self, job_id: str, error: str = None):
-        raw = self.redis.hget(self.jobs_key, job_id)
-        if raw:
-            job = json.loads(raw)
-            job["status"] = "retrying"
-            job["retries"] = job.get("retries", 0) + 1
-            if error:
-                job["error"] = error
-
-            # Record audit trail entry for the failed attempt before retrying
-            attempt_num = job["retries"]
-            job.setdefault("attempt_history", []).append({
-                "attempt": attempt_num,
-                "status": "FAILED",
-                "error": error or "Simulated Worker Failure"
-            })
-
-            self.redis.hset(self.jobs_key, job_id, json.dumps(job))
-            self.redis.zadd(self.queue_key, {job_id: job.get("priority", 0)})
-            return job
-        return None
-
-    async def get_all_jobs(self):
-        all_raw = self.redis.hgetall(self.jobs_key)
-        return {jid: json.loads(val) for jid, val in all_raw.items()}
-
-    def get_metrics(self):
-        metrics = self.redis.hgetall(self.metrics_key)
-        queued = self.redis.zcard(self.queue_key)
-        running = int(metrics.get("running", 0))
-        completed = int(metrics.get("completed", 0))
-        failed = int(metrics.get("failed", 0))
-
-        total_finished = completed + failed
-        failure_rate = round((failed / total_finished * 100), 1) if total_finished > 0 else 0.0
-
-        return {
-            "queued": queued,
-            "running": running,
-            "completed": completed,
-            "failed": failed,
-            "failure_rate": failure_rate
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._jobs: Dict[str, Dict[str, Any]] = {}
+        self._lock: asyncio.Lock = asyncio.Lock()
+        self._metrics = {
+            "queued": 0,
+            "running": 0,
+            "completed": 0,
+            "failed": 0,
+            "failure_rate": 0.0,
         }
 
-job_queue = RedisJobQueue()
+    def _recalculate_failure_rate(self):
+        total_finished = self._metrics["completed"] + self._metrics["failed"]
+        if total_finished > 0:
+            self._metrics["failure_rate"] = round((self._metrics["failed"] / total_finished) * 100, 1)
+        else:
+            self._metrics["failure_rate"] = 0.0
+
+    async def enqueue(self, job_data: Dict[str, Any]):
+        async with self._lock:
+            job_id = job_data["id"]
+            job_data.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+            job_data.setdefault("status", "queued")
+            job_data.setdefault("worker_id", None)
+            job_data.setdefault("started_at", None)
+            job_data.setdefault("completed_at", None)
+            job_data.setdefault("failed_at", None)
+            job_data.setdefault("retries", 0)
+            job_data.setdefault("max_retries", 3)
+            job_data.setdefault("error", None)
+
+            self._jobs[job_id] = job_data
+            self._queue.put_nowait(job_data)
+            self._metrics["queued"] = self._queue.qsize()
+
+    async def enqueue_batch(self, jobs_list: List[Dict[str, Any]]) -> List[str]:
+        job_ids = []
+        async with self._lock:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for job_data in jobs_list:
+                job_id = job_data["id"]
+                job_data.setdefault("created_at", now_iso)
+                job_data.setdefault("status", "queued")
+                job_data.setdefault("worker_id", None)
+                job_data.setdefault("started_at", None)
+                job_data.setdefault("completed_at", None)
+                job_data.setdefault("failed_at", None)
+                job_data.setdefault("retries", 0)
+                job_data.setdefault("max_retries", 3)
+                job_data.setdefault("error", None)
+
+                self._jobs[job_id] = job_data
+                self._queue.put_nowait(job_data)
+                job_ids.append(job_id)
+
+            self._metrics["queued"] = self._queue.qsize()
+        return job_ids
+
+    async def dequeue(self) -> Optional[Dict[str, Any]]:
+        job_data = await self._queue.get()
+        async with self._lock:
+            self._metrics["queued"] = self._queue.qsize()
+        return job_data
+
+    async def mark_running(self, job_id: str, worker_id: str):
+        async with self._lock:
+            if job_id in self._jobs:
+                self._jobs[job_id]["status"] = "running"
+                self._jobs[job_id]["worker_id"] = worker_id
+                self._jobs[job_id]["started_at"] = datetime.now(timezone.utc).isoformat()
+                self._metrics["running"] = sum(1 for j in self._jobs.values() if j.get("status") == "running")
+                self._metrics["queued"] = self._queue.qsize()
+
+    async def mark_completed(self, job_id: str, result: Optional[Dict[str, Any]] = None):
+        async with self._lock:
+            if job_id in self._jobs:
+                self._jobs[job_id]["status"] = "completed"
+                self._jobs[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
+                if result is not None:
+                    self._jobs[job_id]["result"] = result
+                self._metrics["completed"] += 1
+                self._metrics["running"] = sum(1 for j in self._jobs.values() if j.get("status") == "running")
+                self._recalculate_failure_rate()
+
+    async def mark_failed(self, job_id: str, error: str):
+        async with self._lock:
+            if job_id not in self._jobs:
+                return
+
+            job = self._jobs[job_id]
+            job["retries"] = job.get("retries", 0) + 1
+            job["error"] = error
+            job["failed_at"] = datetime.now(timezone.utc).isoformat()
+
+            if job["retries"] <= job.get("max_retries", 3):
+                job["status"] = "queued"
+                job["worker_id"] = None
+                self._queue.put_nowait(job)
+                self._metrics["queued"] = self._queue.qsize()
+            else:
+                job["status"] = "failed"
+                self._metrics["failed"] += 1
+                self._recalculate_failure_rate()
+
+            self._metrics["running"] = sum(1 for j in self._jobs.values() if j.get("status") == "running")
+
+    async def clear_queued(self) -> int:
+        async with self._lock:
+            cleared_count = 0
+
+            while not self._queue.empty():
+                try:
+                    self._queue.get_nowait()
+                    self._queue.task_done()
+                except (asyncio.QueueEmpty, ValueError):
+                    break
+
+            for job_id, job in list(self._jobs.items()):
+                if job.get("status") == "queued":
+                    job["status"] = "cancelled"
+                    job["error"] = "Queue cleared by operator"
+                    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+                    cleared_count += 1
+
+            self._metrics["queued"] = 0
+            self._metrics["running"] = sum(1 for j in self._jobs.values() if j.get("status") == "running")
+            return cleared_count
+
+    async def get_all_jobs(self) -> Dict[str, Dict[str, Any]]:
+        async with self._lock:
+            return dict(self._jobs)
+
+    def get_metrics(self) -> Dict[str, Any]:
+        return {
+            "queued": self._metrics["queued"],
+            "running": self._metrics["running"],
+            "completed": self._metrics["completed"],
+            "failed": self._metrics["failed"],
+            "failure_rate": self._metrics["failure_rate"],
+        }
+
+job_queue = JobQueue()
+RedisJobQueue = JobQueue
