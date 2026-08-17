@@ -1,14 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Job, Worker, SystemMetrics, ConnectionStatus, JobPriority, BatchWorkloadConfig } from '../types/chronq';
 
+const LIVE_BACKEND_URL = 'https://chronq.onrender.com'; 
+
 const API_BASE = window.location.origin.includes('localhost')
   ? 'http://localhost:8000'
-  : window.location.origin;
+  : (import.meta.env.VITE_BACKEND_URL || LIVE_BACKEND_URL);
 
-const WS_BASE = window.location.origin.includes('localhost')
-  ? 'ws://localhost:8000/api/ws'
-  : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/ws`;
-
+const WS_BASE = API_BASE.replace(/^http/, 'ws') + '/api/ws';
 interface BackendWorkerInfo {
   status?: string;
   current_job?: string | null;
